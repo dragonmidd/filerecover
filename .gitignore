@@ -1,0 +1,29 @@
+# VS
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build outputs
+bin/
+obj/
+build/
+
+# C++
+*.exe
+*.dll
+*.pdb
+*.lib
+*.obj
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Misc
+*.log
+*.zip
+*.tar.gz
