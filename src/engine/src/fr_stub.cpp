@@ -23,6 +23,7 @@ struct fr_handle_s {
 static bool g_inited = false;
 
 // 初始化引擎（例如设置工作目录、日志系统、全局资源）
+// 初始化引擎库，设置全局状态。真实实现应初始化日志、线程池和临时目录。
 fr_error_t fr_init(const char* workdir) {
     (void)workdir; // stub 不使用 workdir，但真实实现可在此创建缓存/日志目录
     g_inited = true;
@@ -30,11 +31,13 @@ fr_error_t fr_init(const char* workdir) {
 }
 
 // 释放全局资源
+// 关闭并释放引擎级全局资源。
 void fr_shutdown(void) {
     g_inited = false;
 }
 
 // 打开镜像或设备，返回一个句柄用于后续操作。error 可选，用于返回详细错误码。
+// 打开镜像/设备，返回会话句柄。失败时通过 err 返回错误码。
 fr_handle_t fr_open_image(const char* path, fr_error_t* err) {
     if (!g_inited) {
         if (err) *err = FR_ERR_NOT_INITIALIZED;
@@ -56,8 +59,11 @@ void fr_close(fr_handle_t h) {
     delete h;
 }
 
+// 关闭并释放句柄及其关联资源。
+
 // 开始扫描：stub 实现只是模拟发现若干候选文件。
 // 真实实现应触发异步扫描/多线程读取、解析并将结果入队。
+// 启动扫描流程（stub 实现为同步填充模拟候选）。真实实现应异步执行并报告进度。
 fr_error_t fr_start_scan(fr_handle_t h, const fr_scan_params_t* params) {
     if (!h) return FR_ERR_INVALID_ARG;
     // 简单模拟：填充若干候选项以供轮询测试使用
@@ -79,6 +85,7 @@ fr_error_t fr_start_scan(fr_handle_t h, const fr_scan_params_t* params) {
 }
 
 // 轮询获取下一个候选项：非阻塞风格。真实实现可改为回调或事件驱动。
+// 非阻塞地获取下一个已发现的候选项。返回 FR_ERR_NOT_FOUND 表示无更多项。
 fr_error_t fr_get_next_candidate(fr_handle_t h, fr_candidate_t* out) {
     if (!h || !out) return FR_ERR_INVALID_ARG;
     std::lock_guard<std::mutex> lk(h->m);
@@ -89,6 +96,7 @@ fr_error_t fr_get_next_candidate(fr_handle_t h, fr_candidate_t* out) {
 
 // 导出候选项到指定路径：stub 仅验证候选项存在并返回 OK。
 // 真正实现应创建目录、写入字节流并处理冲突策略。
+// 导出候选到指定路径。当前 stub 仅模拟成功/失败检查。
 fr_error_t fr_export_candidate(fr_handle_t h, uint64_t candidate_id, const char* out_path) {
     if (!h || !out_path) return FR_ERR_INVALID_ARG;
     // stub: 不实际写文件，仅验证存在
@@ -100,6 +108,7 @@ fr_error_t fr_export_candidate(fr_handle_t h, uint64_t candidate_id, const char*
 }
 
 // 保存/加载扫描项目（JSON）：stub 不做实际存储。
+// 保存扫描项目（例如 JSON）。真实实现应将扫描状态写入磁盘。
 fr_error_t fr_save_project(fr_handle_t h, const char* project_path) {
     (void)h; (void)project_path;
     return FR_OK;
@@ -109,3 +118,5 @@ fr_error_t fr_load_project(fr_handle_t h, const char* project_path) {
     (void)h; (void)project_path;
     return FR_OK;
 }
+
+// 从磁盘加载先前保存的扫描项目到句柄中。

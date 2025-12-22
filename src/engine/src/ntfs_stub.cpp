@@ -10,6 +10,7 @@ struct ntfs_parser_s {
     std::vector<ntfs_file_record_t> records;
 };
 
+// 打开 NTFS 解析上下文（stub）。返回解析器句柄或 nullptr 并在 err_buf 中写入错误。
 ntfs_parser_t ntfs_open(const char* image_path, char* err_buf, size_t err_buf_len) {
     if (!image_path) {
         if (err_buf && err_buf_len) strncpy(err_buf, "null path", err_buf_len-1);
@@ -29,13 +30,17 @@ ntfs_parser_t ntfs_open(const char* image_path, char* err_buf, size_t err_buf_le
     return p;
 }
 
+// 关闭并释放解析器句柄。
 void ntfs_close(ntfs_parser_t p) {
     delete p;
 }
 
+// 获取下一个记录：返回 0 表示成功，1 表示无更多记录，负值表示参数错误。
 int ntfs_next_record(ntfs_parser_t p, ntfs_file_record_t* out) {
     if (!p || !out) return -1;
     if (p->next_index >= p->records.size()) return 1; // no more
     *out = p->records[p->next_index++];
     return 0;
 }
+
+// 获取下一个记录：返回 0 表示成功，1 表示无更多记录，负值表示参数错误。
