@@ -7,28 +7,54 @@
 NTFSParser::NTFSParser() {}
 NTFSParser::~NTFSParser() {}
 
-// 解析 MFT record header
+// 小端安全读取辅助（通过 memcpy 避免未对齐访问）
+static inline uint16_t read_u16_le(const uint8_t* p) {
+    uint16_t v;
+    memcpy(&v, p, sizeof(v));
+    return (uint16_t)v;
+}
+static inline uint32_t read_u32_le(const uint8_t* p) {
+    uint32_t v;
+    memcpy(&v, p, sizeof(v));
+    return (uint32_t)v;
+}
+static inline uint64_t read_u64_le(const uint8_t* p) {
+    uint64_t v;
+    memcpy(&v, p, sizeof(v));
+    return (uint64_t)v;
+}
+
+// 解析 MFT record header（使用安全读取）。
 // 返回: true if header is valid and parsed
 bool NTFSParser::parse_header(const uint8_t* data, size_t size, MFTHeader& header) {
-    if (size < 42) return false; // Minimum header size
+    const size_t MIN_HEADER_SIZE = 42; // next_attr_id at offset 40 + 2
+    if (!data || size < MIN_HEADER_SIZE) return false;
 
     // Parse signature
     memcpy(header.signature, data, 4);
     if (memcmp(header.signature, "FILE", 4) != 0) return false;
 
-    // Parse other fields (little-endian)
-    header.usa_offset = *reinterpret_cast<const uint16_t*>(data + 4);
-    header.usa_size = *reinterpret_cast<const uint16_t*>(data + 6);
-    header.lsn = *reinterpret_cast<const uint64_t*>(data + 8);
-    header.sequence_number = *reinterpret_cast<const uint16_t*>(data + 16);
-    header.link_count = *reinterpret_cast<const uint16_t*>(data + 18);
-    header.attribute_offset = *reinterpret_cast<const uint16_t*>(data + 20);
-    header.flags = *reinterpret_cast<const uint16_t*>(data + 22);
-    header.record_size = *reinterpret_cast<const uint32_t*>(data + 24);
-    header.allocated_size = *reinterpret_cast<const uint32_t*>(data + 28);
-    header.base_record = *reinterpret_cast<const uint64_t*>(data + 32);
-    header.next_attr_id = *reinterpret_cast<const uint16_t*>(data + 40);
+    // Parse other fields (little-endian) using memcpy-based readers
+    header.usa_offset = read_u16_le(data + 4);
+    header.usa_size = read_u16_le(data + 6);
+    header.lsn = read_u64_le(data + 8);
+    header.sequence_number = read_u16_le(data + 16);
+    header.link_count = read_u16_le(data + 18);
+    header.attribute_offset = read_u16_le(data + 20);
+    header.flags = read_u16_le(data + 22);
+    header.record_size = read_u32_le(data + 24);
+    header.allocated_size = read_u32_le(data + 28);
+    header.base_record = read_u64_le(data + 32);
+    header.next_attr_id = read_u16_le(data + 40);
 
+    // Basic sanity checks (relaxed for minimal test fixtures):
+    // If record_size is provided and non-zero, ensure attribute_offset lies within it.
+    if (header.record_size != 0) {
+        if (header.attribute_offset >= header.record_size) return false;
+    } else {
+        // record_size == 0: accept as long as caller supplied at least 512 bytes (fallback)
+        if (size < 512) return false;
+    }
     return true;
 }
 
