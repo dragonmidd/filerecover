@@ -62,7 +62,35 @@ cmake --build $buildDir --config Release
 if ($BuildTests) {
     Write-Host "Running tests..."
     # 使用 ctest 运行测试并在失败时输出详细信息
+    # 若使用 MinGW 动态运行时，需要确保运行时 DLL 在 PATH 中可见。
+    # 尝试自动定位 MinGW 的 bin 目录并临时添加到 PATH。此操作不会修改全局环境变量，仅对本次脚本有效。
+    $mingwBin = $null
+    try {
+        $gpp = Get-Command g++ -ErrorAction SilentlyContinue
+        if ($gpp) { $mingwBin = Split-Path $gpp.Path }
+    } catch { }
+    if (-Not $mingwBin) {
+        $candidates = @(
+            'D:\\green\\mingw64\\bin',
+            'C:\\msys64\\mingw64\\bin',
+            'C:\\mingw-w64\\mingw64\\bin',
+            'C:\\Program Files\\mingw-w64\\mingw64\\bin'
+        )
+        foreach ($p in $candidates) { if (Test-Path $p) { $mingwBin = $p; break } }
+    }
+
+    $origPath = $env:PATH
+    if ($mingwBin) {
+        Write-Host "Prepending MinGW bin to PATH for tests: $mingwBin"
+        $env:PATH = "$mingwBin;$env:PATH"
+    } else {
+        Write-Host "MinGW bin not auto-detected; ensure MinGW runtime DLLs are available in PATH or next to test executables." -ForegroundColor Yellow
+    }
+
     ctest -C Release --test-dir $buildDir --output-on-failure
+
+    # 恢复 PATH
+    $env:PATH = $origPath
 }
 
 Write-Host "Done." -ForegroundColor Green

@@ -11,10 +11,25 @@ add_library(filerecover_engine STATIC
 )
 
 # 将 disk_io_stub.cpp 纳入库实现中
-target_sources(filerecover_engine PRIVATE src/disk_io_stub.cpp)
-target_sources(filerecover_engine PRIVATE src/ntfs_mft_stub.cpp)
+if(WIN32)
+  # Use Windows native DiskIO implementation when building on Windows
+  target_sources(filerecover_engine PRIVATE src/disk_io_win.cpp)
+else()
+  target_sources(filerecover_engine PRIVATE src/disk_io_stub.cpp)
+endif()
+target_sources(filerecover_engine PRIVATE src/ntfs_mft.cpp)
+target_sources(filerecover_engine PRIVATE src/ntfs_stub.cpp)
 
 target_include_directories(filerecover_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# MinGW runtime handling: optionally link libstdc++/libgcc statically so
+# exercises and small tools don't require shipping DLLs alongside binaries.
+option(USE_STATIC_MINGW_RUNTIME "Statically link libstdc++ and libgcc when using MinGW" OFF)
+if(MINGW AND USE_STATIC_MINGW_RUNTIME)
+  message(STATUS "MinGW detected: enabling -static-libgcc -static-libstdc++ for filerecover_engine")
+  # target_link_options requires CMake >= 3.13; project uses 3.15 so it's available.
+  target_link_options(filerecover_engine PRIVATE "-static-libgcc" "-static-libstdc++")
+endif()
 
 option(BUILD_ENGINE_TESTS "Build engine unit tests" ON)
 if(BUILD_ENGINE_TESTS)
