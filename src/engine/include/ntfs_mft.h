@@ -2,6 +2,8 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include <vector>
+#include <utility>
 #include "disk_io.h"
 
 // NTFS MFT Record Header (simplified, based on NTFS spec)
@@ -33,6 +35,9 @@ struct NTFSFileRecord {
     uint64_t creation_time; // FILETIME (100-ns intervals since 1601)
     uint64_t modified_time;
     uint64_t parent_reference; // parent directory file reference (from FILE_NAME)
+    // Data runs for non-resident DATA attribute. Each pair is <cluster_count, lcn>
+    // lcn == -1 indicates a sparse run (unallocated)
+    std::vector<std::pair<uint64_t,int64_t>> data_runs;
 };
 
 // NTFSParser: 提供从镜像/设备读取并解析 MFT 记录的最小接口。

@@ -2,6 +2,7 @@
 #include "ntfs_mft.h"
 #include <cstring>
 #include <vector>
+#include <utility>
 
 // 构造/析构：轻量解析器初始化（当前无资源需要释放）
 NTFSParser::NTFSParser() {}
@@ -22,6 +23,62 @@ static inline uint64_t read_u64_le(const uint8_t* p) {
     uint64_t v;
     memcpy(&v, p, sizeof(v));
     return (uint64_t)v;
+}
+
+// Read signed little-endian integer of up to 8 bytes and sign-extend to int64_t
+static inline int64_t read_signed_le(const uint8_t* p, int size) {
+    if (size <= 0) return 0;
+    uint64_t v = 0;
+    for (int i = 0; i < size; ++i) {
+        v |= (static_cast<uint64_t>(p[i]) << (8 * i));
+    }
+    // if highest bit of the most-significant byte is set, sign extend
+    uint64_t sign_bit = 1ULL << ((size * 8) - 1);
+    if (v & sign_bit) {
+        // sign extend to 64 bits
+        uint64_t mask = (~0ULL) << (size * 8);
+        v |= mask;
+    }
+    return static_cast<int64_t>(v);
+}
+
+// Decode NTFS data runs.
+// Input: pointer to runlist data and its max length (not necessarily null-terminated).
+// Output: vector of pairs <cluster_count, lcn> where lcn == -1 means sparse run.
+static bool decode_data_runs(const uint8_t* runs, size_t len, std::vector<std::pair<uint64_t,int64_t>>& out) {
+    out.clear();
+    size_t pos = 0;
+    int64_t prev_lcn = 0;
+    while (pos < len) {
+        uint8_t header = runs[pos];
+        pos++;
+        if (header == 0) break; // terminator
+        int len_size = header & 0x0F;
+        int off_size = (header >> 4) & 0x0F;
+        if (len_size == 0) return false; // invalid
+        if (pos + len_size + off_size > len) return false; // bounds
+
+        // read cluster count (unsigned little-endian)
+        uint64_t cluster_count = 0;
+        for (int i = 0; i < len_size; ++i) {
+            cluster_count |= (static_cast<uint64_t>(runs[pos + i]) << (8 * i));
+        }
+        pos += len_size;
+
+        int64_t lcn = -1;
+        if (off_size == 0) {
+            // sparse run
+            lcn = -1;
+        } else {
+            int64_t delta = read_signed_le(runs + pos, off_size);
+            lcn = prev_lcn + delta;
+            prev_lcn = lcn;
+        }
+        pos += off_size;
+
+        out.emplace_back(cluster_count, lcn);
+    }
+    return true;
 }
 
 // 解析 MFT record header（使用安全读取）。
@@ -151,6 +208,44 @@ bool NTFSParser::read_mft_record(DiskIO& dio, uint64_t offset, NTFSFileRecord& o
                                 }
                             }
                             out.name[out_i] = '\0';
+                        }
+                    }
+                }
+            }
+
+            // DATA attribute (0x80)
+            if (attr_type == 0x80 && attr_len > 0) {
+                uint8_t non_resident = buf[attr_off + 8];
+                if (non_resident == 0) {
+                    // resident DATA — content offset at +16, size at +16
+                    uint32_t content_size = read_u32_le(buf.data() + attr_off + 16);
+                    uint16_t content_offset = read_u16_le(buf.data() + attr_off + 20);
+                    size_t content_pos = attr_off + content_offset;
+                    if (content_pos + content_size <= buf.size()) {
+                        out.size = content_size;
+                    }
+                } else {
+                    // non-resident DATA: runlist offset at +32, real size at +48
+                    uint16_t runlist_offset = read_u16_le(buf.data() + attr_off + 32);
+                    size_t runlist_pos = attr_off + runlist_offset;
+                    // real size
+                    if (attr_off + 48 + 8 <= buf.size()) {
+                        out.size = read_u64_le(buf.data() + attr_off + 48);
+                    }
+                    if (runlist_pos < buf.size()) {
+                        size_t avail = attr_off + attr_len - runlist_pos;
+                        if (avail > 0) {
+                            std::vector<std::pair<uint64_t,int64_t>> runs_parsed;
+                            if (decode_data_runs(buf.data() + runlist_pos, avail, runs_parsed)) {
+                                // Store absolute LCNs in out.data_runs (sparse runs keep lcn == -1)
+                                out.data_runs.clear();
+                                int64_t prev = 0;
+                                for (auto &pr : runs_parsed) {
+                                    uint64_t cnt = pr.first;
+                                    int64_t lcn = pr.second;
+                                    out.data_runs.emplace_back(cnt, lcn);
+                                }
+                            }
                         }
                     }
                 }
