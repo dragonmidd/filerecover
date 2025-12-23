@@ -27,3 +27,4 @@ Makefile
 *.log
 *.zip
 *.tar.gz
+.vscode/BROWSE.VC.DB
