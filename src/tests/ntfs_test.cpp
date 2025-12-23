@@ -42,6 +42,32 @@ TEST(NTFSParser, ReadMFTRecord) {
         // content: creation_time, modified_time
         write_u64(a + 24, 0x1122334455667788ULL);
         write_u64(a + 32, 0x99AABBCCDDEEFF00ULL);
+
+        // Write a resident FILE_NAME attribute at offset 128
+        size_t f = 128;
+        write_u32(f + 0, 0x30); // FILE_NAME
+        write_u32(f + 4, 0x50); // length
+        data[f + 8] = 0; // resident
+        write_u32(f + 16, 0x24); // content size 36+name
+        write_u16(f + 20, 24); // content offset
+        // content
+        write_u64(f + 24 + 0, 0xCAFEBABE01234567ULL); // parent reference
+        // skip times
+        write_u64(f + 24 + 40, 12345ULL); // allocated_size placeholder
+        write_u64(f + 24 + 48, 123ULL); // real_size placeholder
+        // flags/reparse
+        write_u16(f + 24 + 64, 0); // (name length at offset 64 below)
+        // name length and ns
+        const char* fname = "sample.txt";
+        size_t fnlen = strlen(fname);
+        data[f + 24 + 64] = static_cast<uint8_t>(fnlen);
+        data[f + 24 + 65] = 0; // namespace
+        // write UTF-16LE name starting at f+24+66
+        size_t name_pos = f + 24 + 66;
+        for (size_t i = 0; i < fnlen; ++i) {
+            data[name_pos + i*2] = fname[i];
+            data[name_pos + i*2 + 1] = 0;
+        }
         of.write(reinterpret_cast<const char*>(data.data()), data.size());
     }
 

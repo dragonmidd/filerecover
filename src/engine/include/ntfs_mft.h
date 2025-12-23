@@ -32,6 +32,7 @@ struct NTFSFileRecord {
     // STANDARD_INFORMATION fields
     uint64_t creation_time; // FILETIME (100-ns intervals since 1601)
     uint64_t modified_time;
+    uint64_t parent_reference; // parent directory file reference (from FILE_NAME)
 };
 
 // NTFSParser: 提供从镜像/设备读取并解析 MFT 记录的最小接口。

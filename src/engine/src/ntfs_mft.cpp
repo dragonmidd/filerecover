@@ -88,15 +88,17 @@ bool NTFSParser::read_mft_record(DiskIO& dio, uint64_t offset, NTFSFileRecord& o
     // 此实现将 size 设为读取到的数据乘以 2，作为示例
     out.size = static_cast<uint64_t>(n) * 2;
 
-    // 尝试解析 STANDARD_INFORMATION attribute（type 0x10）
+    // 尝试解析属性：扫描 STANDARD_INFORMATION (0x10) 与 FILE_NAME (0x30)
     if (header.attribute_offset > 0 && header.attribute_offset < (int)MFT_RECORD_SIZE) {
         size_t attr_off = header.attribute_offset;
         while (attr_off + 8 < buf.size()) {
             uint32_t attr_type = read_u32_le(buf.data() + attr_off);
             uint32_t attr_len = read_u32_le(buf.data() + attr_off + 4);
             if (attr_type == 0xFFFFFFFF) break; // end marker
+            if (attr_len == 0) break;
+
+            // STANDARD_INFORMATION
             if (attr_type == 0x10 && attr_len > 0) {
-                // resident check
                 uint8_t non_resident = buf[attr_off + 8];
                 if (non_resident == 0) {
                     uint32_t content_size = read_u32_le(buf.data() + attr_off + 16);
@@ -107,9 +109,53 @@ bool NTFSParser::read_mft_record(DiskIO& dio, uint64_t offset, NTFSFileRecord& o
                         out.modified_time = read_u64_le(buf.data() + content_pos + 8);
                     }
                 }
-                break;
             }
-            if (attr_len == 0) break;
+
+            // FILE_NAME attribute
+            if (attr_type == 0x30 && attr_len > 0) {
+                uint8_t non_resident = buf[attr_off + 8];
+                if (non_resident == 0) {
+                    uint32_t content_size = read_u32_le(buf.data() + attr_off + 16);
+                    uint16_t content_offset = read_u16_le(buf.data() + attr_off + 20);
+                    size_t content_pos = attr_off + content_offset;
+                    // FILE_NAME content layout (resident):
+                    // 0: parent reference (8)
+                    // 8: creation_time (8)
+                    // 16: modified_time (8)
+                    // 24: mft_changed_time (8)
+                    // 32: access_time (8)
+                    // 40: allocated_size (8)
+                    // 48: real_size (8)
+                    // 56: flags (4)
+                    // 60: reparse (4)
+                    // 64: name_length (1)
+                    // 65: name_namespace (1)
+                    // 66: filename (UTF-16LE)
+                    if (content_pos + 66 <= buf.size() && content_size >= 66) {
+                        out.parent_reference = read_u64_le(buf.data() + content_pos + 0);
+                        uint8_t name_len = buf[content_pos + 64];
+                        uint8_t name_ns = buf[content_pos + 65];
+                        size_t name_bytes = static_cast<size_t>(name_len) * 2;
+                        size_t name_pos = content_pos + 66;
+                        if (name_pos + name_bytes <= buf.size()) {
+                            // Convert UTF-16LE name to ASCII/UTF-8 (basic)
+                            size_t max_len = sizeof(out.name) - 1;
+                            size_t out_i = 0;
+                            for (size_t i = 0; i < name_bytes && out_i < max_len; i += 2) {
+                                uint16_t ch = read_u16_le(buf.data() + name_pos + i);
+                                // Simplified: map BMP ASCII directly, replace others with '?'
+                                if (ch < 0x80) {
+                                    out.name[out_i++] = static_cast<char>(ch);
+                                } else {
+                                    out.name[out_i++] = '?';
+                                }
+                            }
+                            out.name[out_i] = '\0';
+                        }
+                    }
+                }
+            }
+
             attr_off += attr_len;
         }
     }
