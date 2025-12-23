@@ -83,7 +83,35 @@ bool NTFSParser::read_mft_record(DiskIO& dio, uint64_t offset, NTFSFileRecord& o
     out.flags = header.flags;
     out.link_count = header.link_count;
     strncpy(out.name, "PARSED_FILE.TXT", sizeof(out.name));
+    out.creation_time = 0;
+    out.modified_time = 0;
     // 此实现将 size 设为读取到的数据乘以 2，作为示例
     out.size = static_cast<uint64_t>(n) * 2;
+
+    // 尝试解析 STANDARD_INFORMATION attribute（type 0x10）
+    if (header.attribute_offset > 0 && header.attribute_offset < (int)MFT_RECORD_SIZE) {
+        size_t attr_off = header.attribute_offset;
+        while (attr_off + 8 < buf.size()) {
+            uint32_t attr_type = read_u32_le(buf.data() + attr_off);
+            uint32_t attr_len = read_u32_le(buf.data() + attr_off + 4);
+            if (attr_type == 0xFFFFFFFF) break; // end marker
+            if (attr_type == 0x10 && attr_len > 0) {
+                // resident check
+                uint8_t non_resident = buf[attr_off + 8];
+                if (non_resident == 0) {
+                    uint32_t content_size = read_u32_le(buf.data() + attr_off + 16);
+                    uint16_t content_offset = read_u16_le(buf.data() + attr_off + 20);
+                    size_t content_pos = attr_off + content_offset;
+                    if (content_pos + 16 <= buf.size() && content_size >= 16) {
+                        out.creation_time = read_u64_le(buf.data() + content_pos);
+                        out.modified_time = read_u64_le(buf.data() + content_pos + 8);
+                    }
+                }
+                break;
+            }
+            if (attr_len == 0) break;
+            attr_off += attr_len;
+        }
+    }
     return true;
 }

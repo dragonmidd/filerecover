@@ -29,6 +29,9 @@ struct NTFSFileRecord {
     // 新增字段用于 header 解析
     uint16_t flags;     // MFT record flags
     uint16_t link_count; // Hard link count
+    // STANDARD_INFORMATION fields
+    uint64_t creation_time; // FILETIME (100-ns intervals since 1601)
+    uint64_t modified_time;
 };
 
 // NTFSParser: 提供从镜像/设备读取并解析 MFT 记录的最小接口。
