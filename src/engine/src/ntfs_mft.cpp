@@ -3,6 +3,10 @@
 #include <cstring>
 #include <vector>
 #include <utility>
+#include <string>
+#include <algorithm>
+#include <cstdio>
+#include <algorithm>
 
 // 构造/析构：轻量解析器初始化（当前无资源需要释放）
 NTFSParser::NTFSParser() {}
@@ -81,6 +85,62 @@ static bool decode_data_runs(const uint8_t* runs, size_t len, std::vector<std::p
     return true;
 }
 
+// Convert UTF-16LE bytes to UTF-8 string. Handles surrogate pairs and
+// replaces invalid sequences with Unicode replacement char (U+FFFD).
+static std::string utf16le_to_utf8(const uint8_t* data, size_t bytes) {
+    std::string out;
+    size_t pos = 0;
+    auto append_utf8 = [&](uint32_t cp){
+        if (cp <= 0x7F) {
+            out.push_back(static_cast<char>(cp));
+        } else if (cp <= 0x7FF) {
+            out.push_back(static_cast<char>(0xC0 | ((cp >> 6) & 0x1F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else if (cp <= 0xFFFF) {
+            out.push_back(static_cast<char>(0xE0 | ((cp >> 12) & 0x0F)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            out.push_back(static_cast<char>(0xF0 | ((cp >> 18) & 0x07)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    };
+
+    while (pos + 1 < bytes) {
+        uint16_t w1 = read_u16_le(data + pos);
+        pos += 2;
+        if (w1 >= 0xD800 && w1 <= 0xDBFF) {
+            // high surrogate, need low surrogate
+            if (pos + 1 < bytes) {
+                uint16_t w2 = read_u16_le(data + pos);
+                pos += 2;
+                if (w2 >= 0xDC00 && w2 <= 0xDFFF) {
+                    uint32_t cp = 0x10000 + (((uint32_t)w1 - 0xD800) << 10) + ((uint32_t)w2 - 0xDC00);
+                    append_utf8(cp);
+                    continue;
+                }
+                // invalid low surrogate — emit replacement char and continue
+                append_utf8(0xFFFD);
+                continue;
+            } else {
+                // truncated surrogate
+                append_utf8(0xFFFD);
+                break;
+            }
+        } else if (w1 >= 0xDC00 && w1 <= 0xDFFF) {
+            // unexpected low surrogate
+            append_utf8(0xFFFD);
+            continue;
+        } else {
+            append_utf8(w1);
+            continue;
+        }
+    }
+    return out;
+}
+
 // 解析 MFT record header（使用安全读取）。
 // 返回: true if header is valid and parsed
 bool NTFSParser::parse_header(const uint8_t* data, size_t size, MFTHeader& header) {
@@ -113,6 +173,120 @@ bool NTFSParser::parse_header(const uint8_t* data, size_t size, MFTHeader& heade
         if (size < 512) return false;
     }
     return true;
+}
+
+// Map a file byte range into absolute disk offsets using data_runs.
+bool NTFSParser::map_file_range(const NTFSFileRecord& rec, uint64_t file_offset, size_t len,
+                                uint64_t cluster_size, std::vector<std::pair<uint64_t,size_t>>& out) {
+    out.clear();
+    if (len == 0) return true;
+    if (cluster_size == 0) return false;
+
+    // Iterate runs and compute file-space spans
+    uint64_t file_cursor = 0; // byte offset within file as we scan runs
+    for (const auto &run : rec.data_runs) {
+        uint64_t cluster_count = run.first;
+        int64_t lcn = run.second; // -1 => sparse
+        uint64_t run_bytes = cluster_count * cluster_size;
+
+        // If the requested range starts after this run, skip
+        if (file_offset >= file_cursor + run_bytes) {
+            file_cursor += run_bytes;
+            continue;
+        }
+
+        // Determine start within this run
+        uint64_t start_in_run = 0;
+        if (file_offset > file_cursor) start_in_run = file_offset - file_cursor;
+
+        // How many bytes remain to satisfy the request
+        uint64_t remaining = len;
+        // available in this run from start_in_run
+        uint64_t avail = run_bytes - start_in_run;
+        uint64_t take = (remaining <= avail) ? remaining : avail;
+
+        if (lcn != -1) {
+            // absolute disk offset: lcn * cluster_size + start_in_run
+            uint64_t disk_off = static_cast<uint64_t>(lcn) * cluster_size + start_in_run;
+            out.emplace_back(disk_off, static_cast<size_t>(take));
+        } else {
+            // sparse region - not a disk mapping; we skip adding disk offsets
+            // caller should interpret gaps as zero-filled
+        }
+
+        // advance
+        len -= take;
+        file_offset += take;
+        file_cursor += run_bytes;
+        if (len == 0) break;
+    }
+
+    return (len == 0);
+}
+
+bool NTFSParser::read_file_range(DiskIO& dio, const NTFSFileRecord& rec,
+                                 uint64_t file_offset, size_t len,
+                                 void* out_buf, size_t out_buf_size, uint64_t cluster_size) {
+    if (!out_buf) return false;
+    if (out_buf_size < len) return false;
+    uint8_t* dest = reinterpret_cast<uint8_t*>(out_buf);
+
+    uint64_t file_cursor = 0; // byte offset within file as we scan runs
+    size_t remaining = len;
+    uint64_t write_pos = 0; // within dest
+
+    for (const auto &run : rec.data_runs) {
+        if (remaining == 0) break;
+        uint64_t cluster_count = run.first;
+        int64_t lcn = run.second;
+        uint64_t run_bytes = cluster_count * cluster_size;
+
+        // If requested range starts after this run, skip
+        if (file_offset >= file_cursor + run_bytes) {
+            file_cursor += run_bytes;
+            continue;
+        }
+
+        // start within run
+        uint64_t start_in_run = (file_offset > file_cursor) ? (file_offset - file_cursor) : 0;
+        uint64_t avail = run_bytes - start_in_run;
+        uint64_t take = std::min<uint64_t>(avail, remaining);
+
+        if (lcn == -1) {
+            // sparse: fill zeros
+            memset(dest + write_pos, 0, static_cast<size_t>(take));
+        } else {
+            uint64_t disk_off = static_cast<uint64_t>(lcn) * cluster_size + start_in_run;
+            ssize_t got = dio.read_at(disk_off, dest + write_pos, static_cast<size_t>(take));
+            if (got < 0 || static_cast<uint64_t>(got) != take) return false;
+        }
+
+        remaining -= take;
+        write_pos += take;
+        file_offset += take;
+        file_cursor += run_bytes;
+    }
+
+    // If after scanning runs still remaining > 0, treat as zeros or EOF
+    if (remaining > 0) {
+        // If file size smaller than requested, zero-fill remainder
+        memset(dest + write_pos, 0, remaining);
+        remaining = 0;
+    }
+
+    return true;
+}
+
+bool NTFSParser::read_file_range(DiskIO& dio, const NTFSFileRecord& rec,
+                                 uint64_t file_offset, size_t len,
+                                 std::vector<uint8_t>& out, uint64_t cluster_size) {
+    out.clear();
+    try {
+        out.resize(len);
+    } catch (...) {
+        return false;
+    }
+    return read_file_range(dio, rec, file_offset, len, out.data(), out.size(), cluster_size);
 }
 
 // 这是一个最小实现：读取一个 MFT 记录（1024 字节），验证前 4 字节是否为 'FILE'
@@ -195,19 +369,12 @@ bool NTFSParser::read_mft_record(DiskIO& dio, uint64_t offset, NTFSFileRecord& o
                         size_t name_bytes = static_cast<size_t>(name_len) * 2;
                         size_t name_pos = content_pos + 66;
                         if (name_pos + name_bytes <= buf.size()) {
-                            // Convert UTF-16LE name to ASCII/UTF-8 (basic)
+                            // Convert UTF-16LE name to UTF-8 and copy into fixed buffer
+                            std::string name_utf8 = utf16le_to_utf8(buf.data() + name_pos, name_bytes);
                             size_t max_len = sizeof(out.name) - 1;
-                            size_t out_i = 0;
-                            for (size_t i = 0; i < name_bytes && out_i < max_len; i += 2) {
-                                uint16_t ch = read_u16_le(buf.data() + name_pos + i);
-                                // Simplified: map BMP ASCII directly, replace others with '?'
-                                if (ch < 0x80) {
-                                    out.name[out_i++] = static_cast<char>(ch);
-                                } else {
-                                    out.name[out_i++] = '?';
-                                }
-                            }
-                            out.name[out_i] = '\0';
+                            size_t copy_len = name_utf8.size() < max_len ? name_utf8.size() : max_len;
+                            memcpy(out.name, name_utf8.data(), copy_len);
+                            out.name[copy_len] = '\0';
                         }
                     }
                 }
@@ -256,3 +423,4 @@ bool NTFSParser::read_mft_record(DiskIO& dio, uint64_t offset, NTFSFileRecord& o
     }
     return true;
 }
+
