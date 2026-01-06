@@ -16,6 +16,10 @@ typedef struct {
     uint8_t name_namespace;  // name namespace from FILE_NAME attribute (if known)
 } ntfs_file_record_t;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // 打开 MFT 解析会话
 // 参数:
 //  - image_path: 镜像文件路径或设备路径（实现可扩展以接受 DiskIO）
@@ -27,3 +31,12 @@ void ntfs_close(ntfs_parser_t p);
 // 读取下一个 MFT 条目（迭代风格）
 // 返回: 0 表示成功并填充 out；非 0 表示结束或错误
 int ntfs_next_record(ntfs_parser_t p, ntfs_file_record_t* out);
+
+// C API helper: extract DATA runlist from a given MFT record in an image.
+// Returns number of runs written into `counts`/`lcns`, or -1 on error.
+int ntfs_extract_data_runs(const char* image_path, uint64_t mft_offset,
+                           uint64_t* counts, int64_t* lcns, size_t max_runs);
+
+#ifdef __cplusplus
+}
+#endif

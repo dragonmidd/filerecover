@@ -19,6 +19,7 @@ else()
 endif()
 target_sources(filerecover_engine PRIVATE src/ntfs_mft.cpp)
 target_sources(filerecover_engine PRIVATE src/ntfs_stub.cpp)
+target_sources(filerecover_engine PRIVATE src/ntfs_capi.cpp)
 
 target_include_directories(filerecover_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 

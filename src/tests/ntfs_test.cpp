@@ -1,6 +1,7 @@
 // ntfs_test.cpp — 验证 NTFS MFT 解析骨架
 #include "ntfs_mft.h"
 #include "disk_io.h"
+#include "ntfs.h"
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <fstream>
@@ -184,6 +185,53 @@ TEST(NTFSParser, NonResidentDataRuns) {
     EXPECT_EQ(r.data_runs[0].first, 2ULL);
     EXPECT_EQ(r.data_runs[0].second, 5LL);
     d.close();
+    std::error_code ec;
+    remove(tmp, ec);
+}
+
+TEST(NTFSParser, CApiExtractDataRuns) {
+    using namespace std::filesystem;
+    auto tmpdir = temp_directory_path();
+    auto suffix = std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    path tmp = tmpdir / (std::string("filerecover-mft-nr-capi-") + suffix + std::string(".bin"));
+    {
+        std::ofstream of(tmp, std::ios::binary);
+        std::vector<unsigned char> data(2048, 0x00);
+        data[0] = 'F'; data[1] = 'I'; data[2] = 'L'; data[3] = 'E';
+        // attribute offset
+        data[20] = 48; data[21] = 0;
+        size_t a = 48;
+        auto write_u32 = [&](size_t off, uint32_t v){ data[off+0]=v&0xFF; data[off+1]=(v>>8)&0xFF; data[off+2]=(v>>16)&0xFF; data[off+3]=(v>>24)&0xFF; };
+        auto write_u16 = [&](size_t off, uint16_t v){ data[off+0]=v&0xFF; data[off+1]=(v>>8)&0xFF; };
+        auto write_u64 = [&](size_t off, uint64_t v){ for(int i=0;i<8;++i) data[off+i]= (v>>(8*i)) & 0xFF; };
+
+        // DATA attribute (non-resident) at offset a
+        write_u32(a + 0, 0x80); // DATA
+        // we'll set total attr length later; choose 128
+        write_u32(a + 4, 128);
+        data[a + 8] = 1; // non-resident
+        // runlist offset at +32 (we will place runlist at a + 56)
+        write_u16(a + 32, 56);
+        // real size at +48 (8 bytes)
+        write_u64(a + 48, 0x0000000000003039ULL); // 12345
+
+        // build a simple runlist at a+56: one run with length=2 clusters, lcn delta=5
+        size_t rl = a + 56;
+        // header: len_size=1, off_size=3 -> 0x31
+        data[rl + 0] = 0x31;
+        data[rl + 1] = 0x02; // cluster_count = 2
+        data[rl + 2] = 0x05; data[rl + 3] = 0x00; data[rl + 4] = 0x00; // lcn delta = 5
+        data[rl + 5] = 0x00; // terminator
+
+        of.write(reinterpret_cast<const char*>(data.data()), data.size());
+    }
+
+    uint64_t counts[8]; int64_t lcns[8];
+    int n = ntfs_extract_data_runs(tmp.string().c_str(), 0, counts, lcns, 8);
+    ASSERT_GT(n, 0);
+    EXPECT_EQ(counts[0], 2ULL);
+    EXPECT_EQ(lcns[0], 5LL);
+
     std::error_code ec;
     remove(tmp, ec);
 }

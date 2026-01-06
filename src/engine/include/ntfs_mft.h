@@ -80,3 +80,9 @@ private:
     // 返回: true if header is valid and parsed
     bool parse_header(const uint8_t* data, size_t size, MFTHeader& header);
 };
+
+
+
+// Data-run helpers (non-member, available to other translation units)
+bool decode_data_runs(const uint8_t* runs, size_t len, std::vector<std::pair<uint64_t,int64_t>>& out);
+void normalize_data_runs(std::vector<std::pair<uint64_t,int64_t>>& runs);

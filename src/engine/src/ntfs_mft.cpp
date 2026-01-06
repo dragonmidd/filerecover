@@ -49,7 +49,7 @@ static inline int64_t read_signed_le(const uint8_t* p, int size) {
 // Decode NTFS data runs.
 // Input: pointer to runlist data and its max length (not necessarily null-terminated).
 // Output: vector of pairs <cluster_count, lcn> where lcn == -1 means sparse run.
-static bool decode_data_runs(const uint8_t* runs, size_t len, std::vector<std::pair<uint64_t,int64_t>>& out) {
+bool decode_data_runs(const uint8_t* runs, size_t len, std::vector<std::pair<uint64_t,int64_t>>& out) {
     out.clear();
     size_t pos = 0;
     int64_t prev_lcn = 0;
@@ -83,6 +83,30 @@ static bool decode_data_runs(const uint8_t* runs, size_t len, std::vector<std::p
         out.emplace_back(cluster_count, lcn);
     }
     return true;
+}
+
+// Normalize data runs: merge adjacent runs when possible (contiguous LCNs
+// and non-sparse). This reduces fragmentation in the internal representation.
+void normalize_data_runs(std::vector<std::pair<uint64_t,int64_t>>& runs) {
+    if (runs.size() < 2) return;
+    std::vector<std::pair<uint64_t,int64_t>> out;
+    out.reserve(runs.size());
+    auto cur = runs[0];
+    for (size_t i = 1; i < runs.size(); ++i) {
+        auto next = runs[i];
+        if (cur.second != -1 && next.second != -1) {
+            // if LCNs are contiguous
+            if (cur.second + static_cast<int64_t>(cur.first) == next.second) {
+                cur.first += next.first;
+                continue;
+            }
+        }
+        // cannot merge (including sparse), push current
+        out.push_back(cur);
+        cur = next;
+    }
+    out.push_back(cur);
+    runs.swap(out);
 }
 
 // Parse an ATTRIBUTE_LIST resident content for referenced MFT record offsets.
@@ -481,6 +505,7 @@ bool NTFSParser::read_mft_record(DiskIO& dio, uint64_t offset, NTFSFileRecord& o
                                     int64_t lcn = pr.second;
                                     out.data_runs.emplace_back(cnt, lcn);
                                 }
+                                normalize_data_runs(out.data_runs);
                             }
                         }
                     }
