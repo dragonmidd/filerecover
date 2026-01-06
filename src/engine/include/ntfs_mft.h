@@ -35,6 +35,7 @@ struct NTFSFileRecord {
     uint64_t creation_time; // FILETIME (100-ns intervals since 1601)
     uint64_t modified_time;
     uint64_t parent_reference; // parent directory file reference (from FILE_NAME)
+    uint8_t name_namespace; // namespace from FILE_NAME attribute
     // Data runs for non-resident DATA attribute. Each pair is <cluster_count, lcn>
     // lcn == -1 indicates a sparse run (unallocated)
     std::vector<std::pair<uint64_t,int64_t>> data_runs;
@@ -56,6 +57,23 @@ public:
     // 返回: true 表示成功并填充 out；false 表示解析失败或数据不完整
     bool read_mft_record(DiskIO& dio, uint64_t offset, NTFSFileRecord& out);
 
+    // Map a file byte range [file_offset, file_offset+len) to absolute
+    // disk byte ranges using parsed `data_runs` and the provided `cluster_size`.
+    // Output: vector of pairs (absolute_disk_offset, bytes_to_read) in order.
+    // Sparse runs (lcn == -1) are represented by entries with bytes_to_read == 0
+    // for the corresponding region and are not emitted as disk offsets.
+    bool map_file_range(const NTFSFileRecord& rec, uint64_t file_offset, size_t len,
+                        uint64_t cluster_size, std::vector<std::pair<uint64_t,size_t>>& out);
+    // Read file data using parsed data_runs.
+    // Variant A: writes into a caller-provided buffer of size out_buf_size.
+    bool read_file_range(DiskIO& dio, const NTFSFileRecord& rec,
+                         uint64_t file_offset, size_t len,
+                         void* out_buf, size_t out_buf_size, uint64_t cluster_size);
+
+    // Variant B: appends the requested bytes into a std::vector<uint8_t>.
+    bool read_file_range(DiskIO& dio, const NTFSFileRecord& rec,
+                         uint64_t file_offset, size_t len,
+                         std::vector<uint8_t>& out, uint64_t cluster_size);
 private:
     // 解析 MFT record header
     // 返回: true if header is valid and parsed

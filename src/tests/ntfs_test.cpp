@@ -129,6 +129,7 @@ TEST(NTFSParser, FileNameUtf16) {
     ASSERT_TRUE(p.read_mft_record(d, 0, r));
     // Expect the UTF-8 decoded name equals the UTF-8 string literal
     EXPECT_STREQ(r.name, u8"文件.txt");
+    EXPECT_EQ(r.name_namespace, 0);
     d.close();
     std::error_code ec;
     remove(tmp, ec);
@@ -399,6 +400,60 @@ TEST(NTFSParser, ComplexDataRunsWithSparseAndNegativeDelta) {
     expect.push_back('\0'); // sparse
     expect.push_back('D'); expect.push_back('D'); // run4
     EXPECT_EQ(got, expect);
+
+    d.close();
+    std::error_code ec;
+    remove(tmp, ec);
+}
+
+TEST(NTFSParser, DataRunsFromBaseRecord) {
+    using namespace std::filesystem;
+    auto tmpdir = temp_directory_path();
+    auto suffix = std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    path tmp = tmpdir / (std::string("filerecover-base-rec-") + suffix + std::string(".bin"));
+    const uint64_t MFT_RECORD_SIZE = 1024;
+    {
+        std::ofstream of(tmp, std::ios::binary);
+        std::vector<uint8_t> data(MFT_RECORD_SIZE * 2, 0);
+        // base record at offset MFT_RECORD_SIZE contains DATA non-resident runlist
+        size_t base = MFT_RECORD_SIZE;
+        data[base + 0] = 'F'; data[base + 1] = 'I'; data[base + 2] = 'L'; data[base + 3] = 'E';
+        // attribute offset for base record
+        data[base + 20] = 48; data[base + 21] = 0;
+        size_t a = base + 48;
+        auto write_u32 = [&](size_t off, uint32_t v){ data[off+0]=v&0xFF; data[off+1]=(v>>8)&0xFF; data[off+2]=(v>>16)&0xFF; data[off+3]=(v>>24)&0xFF; };
+        auto write_u16 = [&](size_t off, uint16_t v){ data[off+0]=v&0xFF; data[off+1]=(v>>8)&0xFF; };
+        auto write_u64 = [&](size_t off, uint64_t v){ for(int i=0;i<8;++i) data[off+i]= (v>>(8*i)) & 0xFF; };
+
+        // DATA attribute in base record
+        write_u32(a + 0, 0x80);
+        write_u32(a + 4, 128);
+        data[a + 8] = 1; // non-resident
+        write_u16(a + 32, 56);
+        write_u64(a + 48, 0x100ULL);
+        size_t rl = a + 56;
+        // one run count=2 lcn delta=7
+        data[rl + 0] = 0x11; data[rl + 1] = 0x02; data[rl + 2] = 0x07;
+        data[rl + 3] = 0x00; // terminator
+
+        // leading record at offset 0 references base record
+        data[0] = 'F'; data[1] = 'I'; data[2] = 'L'; data[3] = 'E';
+        // write base_record at offset 32 (little-endian)
+        uint64_t base_ref = static_cast<uint64_t>(base);
+        for (int i = 0; i < 8; ++i) data[32 + i] = static_cast<uint8_t>((base_ref >> (8*i)) & 0xFF);
+        data[20] = 48; data[21] = 0; // attribute offset (no DATA here)
+
+        of.write(reinterpret_cast<const char*>(data.data()), data.size());
+    }
+
+    DiskIO d;
+    ASSERT_TRUE(d.open(tmp.string().c_str()));
+    NTFSParser p;
+    NTFSFileRecord r;
+    ASSERT_TRUE(p.read_mft_record(d, 0, r));
+    ASSERT_GT(r.data_runs.size(), 0u);
+    EXPECT_EQ(r.data_runs[0].first, 2ULL);
+    EXPECT_EQ(r.data_runs[0].second, 7LL);
 
     d.close();
     std::error_code ec;

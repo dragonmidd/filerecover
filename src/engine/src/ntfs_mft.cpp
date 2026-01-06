@@ -375,6 +375,8 @@ bool NTFSParser::read_mft_record(DiskIO& dio, uint64_t offset, NTFSFileRecord& o
                             size_t copy_len = name_utf8.size() < max_len ? name_utf8.size() : max_len;
                             memcpy(out.name, name_utf8.data(), copy_len);
                             out.name[copy_len] = '\0';
+                            // store namespace
+                            out.name_namespace = name_ns;
                         }
                     }
                 }
@@ -419,6 +421,46 @@ bool NTFSParser::read_mft_record(DiskIO& dio, uint64_t offset, NTFSFileRecord& o
             }
 
             attr_off += attr_len;
+        }
+    }
+    // If this record references a base record (extension), try to read DATA attributes from base record
+    if (header.base_record != 0 && out.data_runs.empty()) {
+        uint64_t base_off = static_cast<uint64_t>(header.base_record);
+        if (base_off < buf.size() * 1000) { // avoid ridiculous seeks in test env
+            std::vector<uint8_t> basebuf(MFT_RECORD_SIZE);
+            ssize_t bn = dio.read_at(base_off, basebuf.data(), basebuf.size());
+            if (bn > 0) {
+                // scan attributes in base record for DATA attribute
+                size_t base_attr_off = read_u16_le(basebuf.data() + 20);
+                if (base_attr_off > 0 && base_attr_off < basebuf.size()) {
+                    size_t aoff = base_attr_off;
+                    while (aoff + 8 < basebuf.size()) {
+                        uint32_t atype = read_u32_le(basebuf.data() + aoff);
+                        uint32_t alen = read_u32_le(basebuf.data() + aoff + 4);
+                        if (atype == 0xFFFFFFFF) break;
+                        if (alen == 0) break;
+                        if (atype == 0x80) {
+                            uint8_t non_res = basebuf[aoff + 8];
+                            if (non_res != 0) {
+                                uint16_t runlist_offset = read_u16_le(basebuf.data() + aoff + 32);
+                                size_t runpos = aoff + runlist_offset;
+                                if (runpos < aoff + alen && runpos < basebuf.size()) {
+                                    size_t avail = aoff + alen - runpos;
+                                    std::vector<std::pair<uint64_t,int64_t>> runs_parsed;
+                                    if (decode_data_runs(basebuf.data() + runpos, avail, runs_parsed)) {
+                                        out.data_runs.clear();
+                                        int64_t prev = 0;
+                                        for (auto &pr : runs_parsed) {
+                                            out.data_runs.emplace_back(pr.first, pr.second);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        aoff += alen;
+                    }
+                }
+            }
         }
     }
     return true;
