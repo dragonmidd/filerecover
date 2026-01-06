@@ -85,6 +85,27 @@ static bool decode_data_runs(const uint8_t* runs, size_t len, std::vector<std::p
     return true;
 }
 
+// Parse an ATTRIBUTE_LIST resident content for referenced MFT record offsets.
+// This is a tolerant parser: it reads entries as (type, length, ... , file_reference)
+// and collects non-zero file_reference values. It's robust to varying entry
+// lengths by reading a 16-bit length first and falling back to 32-bit length.
+static void parse_attribute_list_refs(const uint8_t* data, size_t size, std::vector<uint64_t>& out_refs) {
+    out_refs.clear();
+    size_t pos = 0;
+    while (pos + 24 <= size) {
+        uint32_t atype = read_u32_le(data + pos);
+        if (atype == 0) break;
+        uint16_t len16 = read_u16_le(data + pos + 4);
+        uint32_t len32 = read_u32_le(data + pos + 4);
+        size_t entry_len = (len16 >= 24) ? static_cast<size_t>(len16) : static_cast<size_t>(len32);
+        if (entry_len < 24 || pos + entry_len > size) break;
+        // file reference usually at offset 16 inside the entry
+        uint64_t file_ref = read_u64_le(data + pos + 16);
+        if (file_ref != 0) out_refs.push_back(file_ref);
+        pos += entry_len;
+    }
+}
+
 // Convert UTF-16LE bytes to UTF-8 string. Handles surrogate pairs and
 // replaces invalid sequences with Unicode replacement char (U+FFFD).
 static std::string utf16le_to_utf8(const uint8_t* data, size_t bytes) {
@@ -342,7 +363,7 @@ bool NTFSParser::read_mft_record(DiskIO& dio, uint64_t offset, NTFSFileRecord& o
                 }
             }
 
-            // ATTRIBUTE_LIST (0x20) - resident entries that may reference other MFT records
+            // ATTRIBUTE_LIST (0x20) - resident attribute list; parse proper entries
             if (attr_type == 0x20 && attr_len > 0) {
                 uint8_t non_resident = buf[attr_off + 8];
                 if (non_resident == 0) {
@@ -350,17 +371,16 @@ bool NTFSParser::read_mft_record(DiskIO& dio, uint64_t offset, NTFSFileRecord& o
                     uint16_t content_offset = read_u16_le(buf.data() + attr_off + 20);
                     size_t content_pos = attr_off + content_offset;
                     if (content_pos + 8 <= buf.size() && content_size >= 8) {
-                        size_t scan_end = content_pos + content_size - 8;
-                        for (size_t p = content_pos; p <= scan_end; p += 8) {
-                            uint64_t possible_ref = read_u64_le(buf.data() + p);
-                            if (possible_ref == 0) continue;
-                            // Try to read referenced MFT record at that offset
+                        std::vector<uint64_t> refs;
+                        parse_attribute_list_refs(buf.data() + content_pos, content_size, refs);
+                        for (uint64_t ref_off : refs) {
+                            if (ref_off == 0) continue;
                             std::vector<uint8_t> refbuf(MFT_RECORD_SIZE);
-                            ssize_t rn = dio.read_at(possible_ref, refbuf.data(), refbuf.size());
+                            ssize_t rn = dio.read_at(ref_off, refbuf.data(), refbuf.size());
+                            if (rn <= 0) continue;
                             if (rn >= 4 && refbuf[0] == 'F' && refbuf[1] == 'I' && refbuf[2] == 'L' && refbuf[3] == 'E') {
-                                size_t aoff = read_u16_le(refbuf.data() + 20);
-                                if (aoff > 0 && aoff < refbuf.size()) {
-                                    size_t ra = aoff;
+                                size_t ra = read_u16_le(refbuf.data() + 20);
+                                if (ra > 0 && ra < refbuf.size()) {
                                     while (ra + 8 < refbuf.size()) {
                                         uint32_t at = read_u32_le(refbuf.data() + ra);
                                         uint32_t al = read_u32_le(refbuf.data() + ra + 4);
