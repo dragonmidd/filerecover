@@ -313,7 +313,7 @@ bool NTFSParser::read_mft_record(DiskIO& dio, uint64_t offset, NTFSFileRecord& o
     out.id = offset ? static_cast<uint64_t>(offset / MFT_RECORD_SIZE) : 1;
     out.flags = header.flags;
     out.link_count = header.link_count;
-    strncpy(out.name, "PARSED_FILE.TXT", sizeof(out.name));
+    out.name = "PARSED_FILE.TXT";
     out.creation_time = 0;
     out.modified_time = 0;
     // 此实现将 size 设为读取到的数据乘以 2，作为示例
@@ -338,6 +338,54 @@ bool NTFSParser::read_mft_record(DiskIO& dio, uint64_t offset, NTFSFileRecord& o
                     if (content_pos + 16 <= buf.size() && content_size >= 16) {
                         out.creation_time = read_u64_le(buf.data() + content_pos);
                         out.modified_time = read_u64_le(buf.data() + content_pos + 8);
+                    }
+                }
+            }
+
+            // ATTRIBUTE_LIST (0x20) - resident entries that may reference other MFT records
+            if (attr_type == 0x20 && attr_len > 0) {
+                uint8_t non_resident = buf[attr_off + 8];
+                if (non_resident == 0) {
+                    uint32_t content_size = read_u32_le(buf.data() + attr_off + 16);
+                    uint16_t content_offset = read_u16_le(buf.data() + attr_off + 20);
+                    size_t content_pos = attr_off + content_offset;
+                    if (content_pos + 8 <= buf.size() && content_size >= 8) {
+                        size_t scan_end = content_pos + content_size - 8;
+                        for (size_t p = content_pos; p <= scan_end; p += 8) {
+                            uint64_t possible_ref = read_u64_le(buf.data() + p);
+                            if (possible_ref == 0) continue;
+                            // Try to read referenced MFT record at that offset
+                            std::vector<uint8_t> refbuf(MFT_RECORD_SIZE);
+                            ssize_t rn = dio.read_at(possible_ref, refbuf.data(), refbuf.size());
+                            if (rn >= 4 && refbuf[0] == 'F' && refbuf[1] == 'I' && refbuf[2] == 'L' && refbuf[3] == 'E') {
+                                size_t aoff = read_u16_le(refbuf.data() + 20);
+                                if (aoff > 0 && aoff < refbuf.size()) {
+                                    size_t ra = aoff;
+                                    while (ra + 8 < refbuf.size()) {
+                                        uint32_t at = read_u32_le(refbuf.data() + ra);
+                                        uint32_t al = read_u32_le(refbuf.data() + ra + 4);
+                                        if (at == 0xFFFFFFFF) break;
+                                        if (al == 0) break;
+                                        if (at == 0x80) {
+                                            uint8_t nr = refbuf[ra + 8];
+                                            if (nr != 0) {
+                                                uint16_t runoff = read_u16_le(refbuf.data() + ra + 32);
+                                                size_t rpos = ra + runoff;
+                                                if (rpos < ra + al && rpos < refbuf.size()) {
+                                                    size_t avail = ra + al - rpos;
+                                                    std::vector<std::pair<uint64_t,int64_t>> runs_parsed;
+                                                    if (decode_data_runs(refbuf.data() + rpos, avail, runs_parsed)) {
+                                                        out.data_runs.clear();
+                                                        for (auto &pr : runs_parsed) out.data_runs.emplace_back(pr.first, pr.second);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        ra += al;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -369,12 +417,11 @@ bool NTFSParser::read_mft_record(DiskIO& dio, uint64_t offset, NTFSFileRecord& o
                         size_t name_bytes = static_cast<size_t>(name_len) * 2;
                         size_t name_pos = content_pos + 66;
                         if (name_pos + name_bytes <= buf.size()) {
-                            // Convert UTF-16LE name to UTF-8 and copy into fixed buffer
+                            // Convert UTF-16LE name to UTF-8 and assign to string
                             std::string name_utf8 = utf16le_to_utf8(buf.data() + name_pos, name_bytes);
-                            size_t max_len = sizeof(out.name) - 1;
-                            size_t copy_len = name_utf8.size() < max_len ? name_utf8.size() : max_len;
-                            memcpy(out.name, name_utf8.data(), copy_len);
-                            out.name[copy_len] = '\0';
+                            // Truncate to 255 bytes to avoid unbounded growth in this struct
+                            if (name_utf8.size() > 255) name_utf8.resize(255);
+                            out.name = name_utf8;
                             // store namespace
                             out.name_namespace = name_ns;
                         }

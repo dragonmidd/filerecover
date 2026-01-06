@@ -2,6 +2,7 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include <string>
 #include <vector>
 #include <utility>
 #include "disk_io.h"
@@ -26,7 +27,7 @@ struct MFTHeader {
 // 文件标识、文件名、大小以及其他属性。
 struct NTFSFileRecord {
     uint64_t id;        // 记录标识（例如 MFT 记录号）
-    char name[256];     // 文件名（如果可用）
+    std::string name;   // 文件名（UTF-8），若可用
     uint64_t size;      // 文件大小（字节）
     // 新增字段用于 header 解析
     uint16_t flags;     // MFT record flags

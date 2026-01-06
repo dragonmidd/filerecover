@@ -79,7 +79,7 @@ TEST(NTFSParser, ReadMFTRecord) {
     EXPECT_NE(r.id, 0u);
     EXPECT_EQ(r.flags, 0x01); // Check flags parsed
     EXPECT_EQ(r.link_count, 1); // Check link_count parsed
-    EXPECT_STREQ(r.name, "PARSED_FILE.TXT");
+    EXPECT_EQ(r.name, "PARSED_FILE.TXT");
     EXPECT_GT(r.size, 0u);
     EXPECT_EQ(r.creation_time, 0x1122334455667788ULL);
     EXPECT_EQ(r.modified_time, 0x99AABBCCDDEEFF00ULL);
@@ -128,7 +128,7 @@ TEST(NTFSParser, FileNameUtf16) {
     NTFSFileRecord r;
     ASSERT_TRUE(p.read_mft_record(d, 0, r));
     // Expect the UTF-8 decoded name equals the UTF-8 string literal
-    EXPECT_STREQ(r.name, u8"文件.txt");
+    EXPECT_EQ(r.name, u8"文件.txt");
     EXPECT_EQ(r.name_namespace, 0);
     d.close();
     std::error_code ec;
