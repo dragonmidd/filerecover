@@ -13,6 +13,7 @@ typedef struct {
     uint64_t size;           // 文件大小（字节）
     uint64_t creation_time;  // UTC FILETIME 风格（原型）
     char file_name[256];     // 文件名（若可得）
+    uint8_t name_namespace;  // name namespace from FILE_NAME attribute (if known)
 } ntfs_file_record_t;
 
 // 打开 MFT 解析会话

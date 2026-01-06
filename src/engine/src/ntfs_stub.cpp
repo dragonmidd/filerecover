@@ -25,6 +25,7 @@ ntfs_parser_t ntfs_open(const char* image_path, char* err_buf, size_t err_buf_le
         r.size = 1024 * i;
         r.creation_time = 0;
         snprintf(r.file_name, sizeof(r.file_name), "file_%llu.txt", (unsigned long long)i);
+        r.name_namespace = 0;
         p->records.push_back(r);
     }
     return p;
